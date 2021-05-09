@@ -1,0 +1,80 @@
+---
+title: "Jockey"
+author: "Andrew Dai"
+output: html_notebook
+---
+
+```{r}
+race <- read.csv("race-result-race.csv")
+horse <- read.csv("race-result-horse.csv")
+
+
+full <- merge(race, horse, by = "race_id", all.x = TRUE)
+```
+
+```{r}
+library(dplyr)
+
+full$finishing_position <- as.numeric(full$finishing_position)
+
+df <- full %>% 
+  filter(!is.na(finishing_position)) %>% 
+  mutate(top_3 = case_when(finishing_position == 1 ~ 1, 
+                           finishing_position == 2 ~ 1, 
+                           finishing_position == 3 ~1, 
+                           TRUE ~ 0))
+
+df <- df %>%
+  select(race_course, race_distance, track_condition, track, horse_name, jockey, trainer, actual_weight, draw, top_3)
+
+library(caret)
+dummies <- dummyVars(~ ., data = df)
+df2 <- predict(dummies, newdata = df)
+
+set.seed(825)
+inTraining <- createDataPartition(df2[,ncol(df2)], p = .75, list = FALSE)
+training <- df2[inTraining,]
+testing  <- df2[-inTraining,]
+
+library(xgboost)
+
+negative_cases <- sum(training[,ncol(df2)] == 0)
+postive_cases <- sum(training[,ncol(df2)] == 1)
+
+xgbcv <- xgb.cv(data = training[,-ncol(df2)], 
+                nfold = 5,
+                early_stopping_rounds = 10, 
+                label = training[,ncol(df2)], 
+                nround = 1000, 
+                objective = "binary:logistic", 
+                eval_metric = "auc",
+                scale_pos_weight = negative_cases/postive_cases)
+
+model <- xgboost(data = training[,-ncol(df2)],
+                early_stopping_rounds = 3, 
+                label = training[,ncol(df2)], 
+                nround = xgbcv$best_iteration, 
+                objective = "binary:logistic", 
+                eval_metric = "auc",
+                scale_pos_weight = negative_cases/postive_cases)
+
+
+```
+
+```{r}
+pred <- predict(model, newdata = testing[,-ncol(df2)])
+pred <- ifelse(pred > 0.5, 1, 0)
+confusionMatrix(factor(pred), factor(testing[,ncol(df2)]))
+```
+```{r}
+importance <- xgb.importance(model = model)
+xgb.plot.importance(importance, measure = "Gain", top_n = 12)
+xgb.plot.importance(importance, measure = "Cover" ,top_n = 12)
+
+```
+
+```{r}
+xgb.plot.shap.summary(model = model, data = training[,-ncol(df2)], top_n = 12)
+xgb.plot.shap( model = model, data  = training[,-ncol(df2)], features = "jockeyJ Moreira")
+```
+
